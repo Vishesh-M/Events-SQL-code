@@ -1,0 +1,53 @@
+with bancs as(
+select distinct 
+p.ipp_pol_id
+,p.ipp_leg_pol_no
+,b.IBN_BEN_CD  AS BancsBenID
+,b.IBN_BEN_INS_NO AS BancsInstanceNumber
+--,cc.clm_clm_type_cd
+,max(cd.ccd_term_date) as BancsTerminationDate
+from SHADOWPROD_EDW.VAULT.V_TA_POA_POLICY_ACTIVE p
+INNER JOIN SHADOWPROD_EDW.VAULT.V_TA_POA_POL_BEN b
+	ON b.IPP_POL_ID = p.IPP_POL_ID
+	AND b.IBN_DELETE_FLAG = 'N'
+	AND b.IBN_REC_END_DATE = '9999-01-01 00:00:00.000000000'
+	AND p.IPP_DELETE_FLAG = 'N'
+	AND p.IPP_REC_END_DATE = '9999-01-01 00:00:00.000000000'
+
+INNER JOIN SHADOWPROD_EDW.VAULT.V_TA_CLM_CLAIM_POLICY_ACTIVE tp on tp.ipp_pol_no = p.ipp_pol_no
+    AND tp.cpl_deleted_flg = 'N'
+    AND tp.cpl_rec_start_date <= (CAST(GETDATE() AS DATE))
+    AND tp.cpl_rec_end_date > (CAST(GETDATE() AS DATE))
+INNER JOIN SHADOWPROD_EDW.VAULT.V_TA_CLM_CLAIM_ACTIVE cc on tp.clm_clm_id = cc.clm_clm_id
+    AND cc.clm_deleted_flg = 'N'
+    AND cc.clm_rec_start_date <= (CAST(GETDATE() AS DATE))
+    AND cc.clm_rec_end_date > (CAST(GETDATE() AS DATE))
+INNER JOIN SHADOWPROD_EDW.VAULT.V_TA_CLM_CLM_DTL_ACTIVE cd on cd.clm_clm_id = tp.clm_clm_id
+    AND cd.ccd_clm_eff_start_date <= (CAST(GETDATE() AS DATE))
+    AND cd.ccd_clm_eff_end_date > (CAST(GETDATE() AS DATE))
+
+ group by   p.ipp_pol_id
+,p.ipp_leg_pol_no
+,b.IBN_BEN_CD
+,b.IBN_BEN_INS_NO
+)
+
+
+,claims as(
+select 
+p.Name as LegacyPolicyNumber
+,bc.name as BCID
+,b.BENEFITTYPE__C as BenefitType
+,benefitinstanceno__c
+,b.pasid__c
+,CAST(BENEFITCLAIMEDCLOSUREDATE__C AS DATE) as BC_closedate
+,CAST(NOTIFICATIONDATE__C AS DATE) as NotifiedDate
+,CAST(CVE__DATEOFDISABILITY__C AS DATE) as EventDate
+,CAST(DATECLAIMRECEIVED__C AS DATE) as DATECLAIMRECEIVED
+,CAST(INITIALUNDERASSESSMENTDATE__C AS DATE) as INITIALUNDERASSESSMENTDATE
+,CAST(CVE__INITIALDECISION__C AS DATE) as DecisionDate
+from vault.V_CVE__BENEFITCLAIMED__C_COMBINED bc
+inner join vault.v_cve__policy__c_active p on p.policy_id = bc.cve__policy__c
+inner join vault.v_cve__benefit__c b on bc.cve__benefit__c = b.benefit_id
+where 1=1
+AND (bc.ClosedReason__c  NOT IN ('Duplicate Claim in the Administration System','Not a Legitimate Benefit') OR  bc.ClosedReason__c IS NULL)
