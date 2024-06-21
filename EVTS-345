@@ -1,0 +1,170 @@
+
+
+with alteration as(
+SELECT DISTINCT
+    INS.IIN_INSTR_LVL_ID AS BANCS_POLICY_ID
+    ,INS.IIN_ALT_INSTR_ID
+    ,INS.IIN_INSTR_REF_NO
+    ,INST.IIT_INSTR_TYP_ID
+    ,INST.IIT_INSTR_TYP_REF_NO as ALTERATION_REF_NO
+    ,INST.IIT_INSTR_TYP_CD
+    -- ,INA.IIA_REC_START_DATE AS TRANSACTION_DATE 
+    ,INSTRTYDTL.ITD_INSTR_EFF_DATE AS ALTERATION_EFFECTIVE_DATE
+    ,INSTRTYDTL.ITD_INSTR_REQ_DATE AS ALTERATION_REQUESTED_DATE
+    -- ,INA.IIA_BUSS_STAT_CD
+    -- ,INA.IIA_APP_STG_CD 
+    ,row_number() over (partition by INS.IIN_INSTR_LVL_ID order by INSTRTYDTL.ITD_INSTR_EFF_DATE desc) as alteration_rn
+    
+FROM VAULT.V_TA_POA_INSTR "INS" 
+JOIN VAULT.V_TA_POA_INSTR_TYPE INST 
+    ON INS.IIN_ALT_INSTR_ID = INST.IIN_ALT_INSTR_ID 
+    AND IIT_INSTR_TYP_CD = 'AALT' ----------------------- POLICY ALTERATION
+   AND IIN_INSTR_CAT_CD = 'ANNALT'  --------------------- ALTER INSTRUCTIONS
+-- LEFT JOIN VAULT.V_TA_POA_INSTR_ACTION INA 
+--     ON INST.IIT_INSTR_TYP_ID = INA.IIT_INSTR_TYP_ID
+--     AND INA.IIA_BUSS_STAT_CD =  'APPL' -----------------APPLIED ONLY
+--     AND INA.IIA_APP_STG_CD =  'APPL'   
+JOIN VAULT.V_TA_POA_INSTR_TYP_DTL  INSTRTYDTL  
+    ON INST.IIT_INSTR_TYP_ID = INSTRTYDTL.IIT_INSTR_TYP_ID
+)
+, payments as(
+select distinct pol.ipp_pol_id
+    ,pmthist.iah_gross_mod_ann_amt as annuity_payment_amount
+    ,parsumm.pty_party_id
+    --pmthist.iah_pmt_date as payment_date
+from vault.v_ta_poa_policy pol 
+    join vault.v_ta_poa_annuity_pmt_hist pmthist on pol.ipp_pol_no = pmthist.ipp_pol_no 
+    join vault.v_ta_poa_annuity_pmt_inst pmtinst on pmtinst.iai_ann_pmt_inst_id = pmthist.iai_ann_pmt_inst_id 
+    join vault.v_ta_poa_annuity_pmt_inst_dtl pmtinstdtl on pmtinstdtl.iai_ann_pmt_inst_id = pmtinst.iai_ann_pmt_inst_id 
+    join vault.v_ta_poa_role_hdr rolehdr on pol.ipp_pol_id = rolehdr.ihr_arrgmt_level_id 
+    join vault.v_ta_poa_role_hdr_pty_map rolehdrptymap  on rolehdr.ihr_role_hdr_id = rolehdrptymap.ihr_role_hdr_id  
+    join vault.v_ta_poa_role_hdr_pty_map_dtl rolehdrptymapdtl on rolehdrptymapdtl.ird_rol_hdr_pty_map_id = rolehdrptymap.ird_rol_hdr_pty_map_id 
+    join vault.v_ta_prt_party_summary parsumm on rolehdrptymap.ipy_party_id = parsumm.pty_party_id 
+    
+    where pmthist.iah_rec_end_date = '9999-01-01' 
+    and pmthist.iah_delete_flag = 'N' 
+    and pmtinst.iai_delete_flag = 'N' 
+    and pmtinst.iai_rec_end_date = '9999-01-01' 
+    and pmthist.iah_pmt_status = 'PAID' 
+    and current_date() between pmtinstdtl.iid_eff_start_date and pmtinstdtl.iid_eff_end_date 
+    and rolehdr.ihr_role_typ  = 'PYE' 
+    and rolehdr.ihr_arrgmt_level_cd = 'POL'
+    and rolehdrptymapdtl.idd_role_comm_date <= current_date()  
+    and rolehdrptymapdtl.idd_role_exp_date > current_date()
+    and pmthist.iah_pmt_date <= '2021-04-01'
+    )
+
+    ,cte_get_annuity_payment_instr as (
+    select distinct
+        inst.iai_ann_pmt_inst_id,
+        inst.ipp_pol_no polNo,
+        pyepty.arr_pty_party_id,
+        pty.ipy_party_id,
+        instDtl.IID_PMT_METHOD,
+
+    from
+        vault.v_ta_poa_annuity_pmt_inst inst
+        join vault.v_ta_poa_annuity_pmt_inst_dtl instDtl on inst.iai_ann_pmt_inst_id = instdtl.iai_ann_pmt_inst_id
+        and instdtl.iid_eff_end_date > current_date()
+        and instdtl.iid_eff_start_date <= current_date()
+        and instdtl.iid_rec_end_date = '9999-01-01'
+        and instdtl.iid_delete_flag = 'N'
+        join vault.v_ta_prt_arrgmt_summary pyepty on instDtl.IID_ARRG_ROL_PTY_REF = pyepty.arp_rol_party_ref_no
+        join vault.v_ta_prt_party pty on pyepty.arr_pty_party_id = pty.ipy_party_id
+
+)
+
+select distinct
+p.legacy_policy_number
+,CAST(P.POLICY_COMMENCEMENT_DATE AS DATE) AS POLICY_COMMENCEMENT_DATE
+,p.product_cd
+,policy_status
+,P.POLICY_OWNER
+,parsumm.pty_party_id
+,parsumm.per_first_name
+,parsumm.per_surname
+,parsumm.per_sex_cd as Gender
+--,rolPty.PARTY_PERSON_NAME 
+--,rolPty.PARTY_GENDER_CD AS PARTY_GENDER
+,P.ANNUAL_PREMIUM AS ANNUAL_POLICY_PREMIUM
+,P.PREMIUM_FREQUENCY
+,CASE WHEN  policy_status_cd  IN ('PHI','INF','RLSP','PHII') THEN
+              CASE WHEN
+              DATE_PART(MM,P.POLICY_COMMENCEMENT_DATE) <=  DATE_PART(MM,CURRENT_DATE()) 
+              THEN TO_DATE('2024' ||'-'||  DATE_PART(mm,P.POLICY_COMMENCEMENT_DATE)  ||'-'|| DATE_PART(DD,P.POLICY_COMMENCEMENT_DATE))         
+              ELSE TO_DATE('2023' ||'-'||  DATE_PART(mm,P.POLICY_COMMENCEMENT_DATE)  ||'-'|| DATE_PART(DD,P.POLICY_COMMENCEMENT_DATE)) END
+              ELSE NULL
+              END AS NEXT_ANNIVERSARY
+,PC.BENEFIT_CD
+,PC.BENEFIT
+--,PBA.INSTRUCTION_TYPE
+--,PBA.ALTERATION_REFERENCE_NUMBER
+--,PBA.BUSINESS_STATUS
+--,PBA.APPLICATION_STAGE
+--,CAST(PBA.INSTRUCTION_EFFECTIVE_DATE AS DATE) AS INSTRUCTION_EFFECTIVE_DATE
+--,PBA.BENEFIT_ALTERATION_REASON
+--,PBA.CHANNEL_TYPE
+--,PBA.POLICY_ALTERATION_INSTRUCTION
+,a.IIT_INSTR_TYP_CD as Instruction_type
+,ALTERATION_REF_NO
+,a.ALTERATION_EFFECTIVE_DATE
+,a.ALTERATION_REQUESTED_DATE
+,CAST(BBE.ESCALATION_COMMENCEMENT_DATE AS DATE) AS ESCALATION_COMMENCEMENT_DATE
+,CAST(BBE.ESCALATION_EXPIRY_DATE AS DATE) AS ESCALATION_EXPIRY_DATE
+,BBE.ESCALATION_BASIS
+,BBE.ESCALATION_TYPE
+,BBE.ESCALATION_RATE
+,BBE.ESCALATION_FREQUENCY
+,sum(pay.annuity_payment_amount) as total_annuity_amount_paid
+,pc.PREMIUM_FREQUENCY_CD as Frequency
+,pmtInstr.IID_PMT_METHOD as Payment_destination
+from sem.policy p
+INNER JOIN SEM.POLICY_COVER PC ON PC.BANCS_POLICY_ID = P.BANCS_POLICY_ID
+LEFT JOIN SEM.BANCS_BENEFIT_ESCALATION BBE ON BBE.BANCS_BENEFIT_ID = PC.BANCS_BENEFIT_ID
+--LEFT JOIN SEM.BANCS_ALTER_POLICY_INSTRUCTION PBA ON PBA.BANCS_POLICY_ID = P.BANCS_POLICY_ID 
+LEFT JOIN alteration a on a.bancs_policy_id = P.BANCS_POLICY_ID AND alteration_rn = 1
+join vault.v_ta_poa_role_hdr rolehdr on p.bancs_policy_id = rolehdr.ihr_arrgmt_level_id 
+join vault.v_ta_poa_role_hdr_pty_map rolehdrptymap  on rolehdr.ihr_role_hdr_id = rolehdrptymap.ihr_role_hdr_id  
+join vault.v_ta_poa_role_hdr_pty_map_dtl rolehdrptymapdtl on rolehdrptymapdtl.ird_rol_hdr_pty_map_id = rolehdrptymap.ird_rol_hdr_pty_map_id 
+join vault.v_ta_prt_party_summary parsumm on rolehdrptymap.ipy_party_id = parsumm.pty_party_id and rolehdr.ihr_role_typ  = 'PYE' 
+left join cte_get_annuity_payment_instr pmtInstr on pmtInstr.ipy_party_id = parsumm.pty_party_id
+and rolehdr.ihr_arrgmt_level_cd = 'POL'
+and rolehdrptymapdtl.idd_role_comm_date <= current_date()  
+and rolehdrptymapdtl.idd_role_exp_date > current_date()
+--LEFT JOIN SEM.BANCS_POLICY_ROLE_PARTY rolPty on rolpty.bancs_party_id = parsumm.pty_party_id
+LEFT JOIN payments pay on pay.ipp_pol_id = p.bancs_policy_id
+
+group by 
+p.legacy_policy_number
+,p.product_cd
+,policy_status
+,P.POLICY_OWNER
+,parsumm.pty_party_id
+--,rolPty.PARTY_GENDER_CD
+,parsumm.per_first_name
+,parsumm.per_surname
+,parsumm.per_sex_cd 
+,P.ANNUAL_PREMIUM
+,P.PREMIUM_FREQUENCY
+,policy_status_cd
+,P.POLICY_COMMENCEMENT_DATE
+,PC.BENEFIT_CD
+,PC.BENEFIT
+,a.IIT_INSTR_TYP_CD
+,ALTERATION_REF_NO
+,a.ALTERATION_EFFECTIVE_DATE
+,a.ALTERATION_REQUESTED_DATE
+,CAST(BBE.ESCALATION_COMMENCEMENT_DATE AS DATE)
+,CAST(BBE.ESCALATION_EXPIRY_DATE AS DATE)
+,BBE.ESCALATION_BASIS
+,BBE.ESCALATION_TYPE
+,BBE.ESCALATION_RATE
+,BBE.ESCALATION_FREQUENCY
+,pmtInstr.IID_PMT_METHOD
+,pc.PREMIUM_FREQUENCY_CD
+having
+ P.product_cd LIKE '%ANN%'
+AND a.ALTERATION_EFFECTIVE_DATE <= '2021-04-01'
+
+
+
